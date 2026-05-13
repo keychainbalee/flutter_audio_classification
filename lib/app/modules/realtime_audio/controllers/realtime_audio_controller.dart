@@ -17,7 +17,8 @@ class RealtimeAudioController extends GetxController {
   final confidence = 0.0.obs;
 
   static const int _sampleRate = 16000;
-  static const int _expectedInputSize = 15600;
+  // 1. UPDATE: Ukuran input disesuaikan dengan permintaan model Teachable Machine
+  static const int _expectedInputSize = 44032; 
   
   List<int> _audioBuffer = [];
 
@@ -94,11 +95,15 @@ class RealtimeAudioController extends GetxController {
   }
 
   void _processAudioData(Uint8List data) {
-    Int16List int16Data = data.buffer.asInt16List(data.offsetInBytes, data.lengthInBytes ~/ 2);
+    // 2. UPDATE FIX: Meng-clone data untuk mereset offset memori agar selalu genap
+    Uint8List safeAudioData = Uint8List.fromList(data);
+    Int16List int16Data = safeAudioData.buffer.asInt16List();
+    
     _audioBuffer.addAll(int16Data);
 
     if (_audioBuffer.length >= _expectedInputSize) {
       List<int> samplesToProcess = _audioBuffer.sublist(_audioBuffer.length - _expectedInputSize);
+      // Sisakan setengah buffer untuk overlap (sliding window) yang lebih smooth
       _audioBuffer = _audioBuffer.sublist(_audioBuffer.length - (_expectedInputSize ~/ 2));
       _runInference(samplesToProcess);
     }
@@ -107,12 +112,21 @@ class RealtimeAudioController extends GetxController {
   void _runInference(List<int> pcmData) {
     if (_interpreter == null || _labels.isEmpty) return;
 
-    List<double> inputData = pcmData.map((e) => e / 32768.0).toList();
-    var input = [inputData];
-    var output = List.filled(1, List.filled(_labels.length, 0.0));
-
     try {
+      // 3. UPDATE FIX: Konversi ke Float32List agar tidak memory overflow di TFLite
+      Float32List inputData = Float32List(pcmData.length);
+      for (int i = 0; i < pcmData.length; i++) {
+        inputData[i] = pcmData[i] / 32768.0; // Normalisasi ke -1.0 s/d 1.0
+      }
+
+      // Bungkus ke 2D array [1, 44032] sesuai kemauan model
+      Object input = [inputData];
+      
+      // Siapkan output buffer 2D [1, jumlah_label]
+      var output = List.generate(1, (_) => List.filled(_labels.length, 0.0));
+
       _interpreter!.run(input, output);
+      
       List<double> probabilities = output[0];
       
       double maxProb = 0.0;
@@ -128,6 +142,8 @@ class RealtimeAudioController extends GetxController {
         predictedLabel.value = _labels[maxIndex];
         confidence.value = maxProb;
       }
-    } catch (e) {}
+    } catch (e) {
+      print("Inference realtime error: $e");
+    }
   }
 }
